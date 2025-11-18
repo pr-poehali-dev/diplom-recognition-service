@@ -2,11 +2,13 @@ import json
 import os
 import base64
 from typing import Dict, Any
-import anthropic
+import requests
+from PyPDF2 import PdfReader
+from io import BytesIO
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     '''
-    Business: Extract diploma data from PDF using Anthropic Claude
+    Business: Extract diploma data from PDF using YandexGPT
     Args: event with httpMethod, body containing base64 PDF
           context with request_id
     Returns: JSON with studentName, institution, degree, teacherName
@@ -49,55 +51,76 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 'body': json.dumps({'error': 'No file provided'})
             }
         
-        api_key = os.environ.get('ANTHROPIC_API_KEY')
-        if not api_key:
+        api_key = os.environ.get('YANDEX_API_KEY')
+        folder_id = os.environ.get('YANDEX_FOLDER_ID')
+        
+        if not api_key or not folder_id:
             return {
                 'statusCode': 500,
                 'headers': {
                     'Content-Type': 'application/json',
                     'Access-Control-Allow-Origin': '*'
                 },
-                'body': json.dumps({'error': 'Anthropic API key not configured'})
+                'body': json.dumps({'error': 'Yandex API key or Folder ID not configured'})
             }
         
-        client = anthropic.Anthropic(api_key=api_key)
+        pdf_bytes = base64.b64decode(pdf_base64)
+        pdf_file = BytesIO(pdf_bytes)
+        reader = PdfReader(pdf_file)
         
-        prompt = """Проанализируй этот диплом и извлеки следующую информацию в JSON формате:
-{
+        text = ''
+        for page in reader.pages:
+            text += page.extract_text() + '\n'
+        
+        prompt = f"""Проанализируй текст диплома и извлеки следующую информацию в JSON формате:
+{{
   "studentName": "ФИО студента/участника",
   "institution": "Название образовательного учреждения",
   "degree": "Степень диплома или награды",
   "teacherName": "ФИО преподавателя/научного руководителя"
-}
+}}
+
+Текст диплома:
+{text[:4000]}
 
 Если какое-то поле не найдено, используй "Не указано".
 Верни ТОЛЬКО валидный JSON, без дополнительного текста."""
         
-        message = client.messages.create(
-            model="claude-3-5-sonnet-20241022",
-            max_tokens=1024,
-            messages=[
+        url = 'https://llm.api.cloud.yandex.net/foundationModels/v1/completion'
+        headers = {
+            'Authorization': f'Api-Key {api_key}',
+            'Content-Type': 'application/json'
+        }
+        
+        payload = {
+            'modelUri': f'gpt://{folder_id}/yandexgpt-lite',
+            'completionOptions': {
+                'stream': False,
+                'temperature': 0.3,
+                'maxTokens': 1000
+            },
+            'messages': [
                 {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "document",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "application/pdf",
-                                "data": pdf_base64
-                            }
-                        },
-                        {
-                            "type": "text",
-                            "text": prompt
-                        }
-                    ]
+                    'role': 'user',
+                    'text': prompt
                 }
             ]
-        )
+        }
         
-        result_text = message.content[0].text.strip()
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        
+        if response.status_code != 200:
+            return {
+                'statusCode': 500,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps({'error': f'YandexGPT error: {response.text}'})
+            }
+        
+        result = response.json()
+        result_text = result['result']['alternatives'][0]['message']['text'].strip()
         
         if result_text.startswith('```json'):
             result_text = result_text[7:]
