@@ -49,16 +49,34 @@ const Index = () => {
     setLoading(true);
     
     try {
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      const reader = new FileReader();
+      const base64Promise = new Promise<string>((resolve, reject) => {
+        reader.onload = () => {
+          const base64 = reader.result as string;
+          const base64Data = base64.split(',')[1];
+          resolve(base64Data);
+        };
+        reader.onerror = reject;
+      });
       
-      const mockData: DiplomaData = {
-        studentName: 'Иванов Иван Иванович',
-        institution: 'Московский государственный университет имени М.В. Ломоносова',
-        degree: 'Диплом I степени',
-        teacherName: 'Петров Петр Петрович'
-      };
-      
-      setData(mockData);
+      reader.readAsDataURL(file);
+      const base64Data = await base64Promise;
+
+      const response = await fetch('https://faas.poehali.dev/fa2e48f9-a50b-4087-b4b3-5e60f52e18c1/extract-diploma', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ file: base64Data }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Ошибка обработки');
+      }
+
+      const result = await response.json();
+      setData(result);
       toast.success('Данные успешно извлечены');
     } catch (error) {
       toast.error('Ошибка при обработке файла');
